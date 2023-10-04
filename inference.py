@@ -86,7 +86,9 @@ class CascadeAffordance:
             json.dump(save_dict, fp, indent=2)
 
     def superres_eval(self, save_dir):
-        wsdir = osp.dirname(save_dir)
+        orig_cwd = hydra_utils.get_original_cwd()
+        wsdir = osp.join(orig_cwd, osp.dirname(save_dir))
+        save_dir = osp.join(orig_cwd, save_dir)
 
         cmd = f'cd {hydra_utils.get_original_cwd()}/third_party/EDSR-PyTorch/src;'
         cmd += ' python main.py --data_test Demo --scale 4 --pre_train download --test_only --save_results --dir_demo %s --save_dir %s' % \
@@ -288,7 +290,10 @@ class CascadeAffordance:
             self.three_d_metric(osp.join(self.save_dir, folder), osp.join(self.save_dir, 'recon'))
 
     def three_d_metric(self, inp_folder, out_folder, overlay=True):
-        cmd = 'cd ' + osp.join(hydra_utils.get_original_cwd(), 'third_party/frankmocap') + '; '
+        orig_cwd = hydra_utils.get_original_cwd()
+        inp_folder = osp.join(orig_cwd, inp_folder)
+        out_folder = osp.join(orig_cwd, out_folder)
+        cmd = 'cd ' + osp.join(orig_cwd, 'third_party/frankmocap') + '; '
         cmd += f'python -m demo.demo_handmocap --input_path {inp_folder} \
             --out_dir {out_folder} \
             --view_type ego_centric --renderer_type pytorch3d --no_display --save_pred_pkl'

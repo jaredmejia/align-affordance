@@ -103,7 +103,7 @@ class ObjImgDataset(Dataset):
             mask_param[0:2] = -mask_param[0:2]
             
         base_tensor = pil_image_to_norm_tensor(base_pil_image)
-        gt_mask = (th.FloatTensor(np.asarray(gt_mask)))[None]
+        gt_mask = (th.FloatTensor(np.asarray(gt_mask).copy()))[None]
 
         H, W = self.side_y, self.side_x
         return th.LongTensor(tokens), th.BoolTensor(mask), base_tensor, \
