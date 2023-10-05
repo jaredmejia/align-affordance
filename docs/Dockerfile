@@ -26,7 +26,7 @@ ENV TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}"
 WORKDIR /usr/src/app
 
 RUN pip install -U pip
-RUN pip --no-cache-dir install "git+https://github.com/facebookresearch/pytorch3d.git@stable" 
+RUN pip --no-cache-dir install "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.2" 
 # used by frankmocap. You can comment it out if 3D prediction is not needed.
 RUN pip --no-cache-dir install "git+https://github.com/facebookresearch/detectron2.git@5aeb252b194b93dc2879b4ac34bc51a31b5aee13"
 
