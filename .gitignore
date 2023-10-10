@@ -1,3 +1,6 @@
+assets/
+notebooks/
+gen-output/
 outputs/
 output/
 *.log
