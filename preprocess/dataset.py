@@ -47,7 +47,9 @@ class HOI4D(Dataset):
         return len(self.index_list)
     
     def get_bbox(self, mask, H, W):
+        # ensure that both hand and object masks are present
         bbox = image_utils.mask_to_bbox((mask[..., 0] + mask[..., 2]) > mask.max() / 2)
+
         bbox = image_utils.square_bbox(bbox, pad=0.8)
         bbox = image_utils.intersect_box(bbox, np.array([0,0,W-1,H-1]))
         bbox = image_utils.square_bbox_no_black(bbox, Ymax=H, Xmax=W,)
@@ -79,6 +81,10 @@ class HOI4D(Dataset):
         else: 
             return None
         mask = np.array(mask)
+        if mask.max() == 0:
+            print('no mask', index)
+            return None
+
         if mask.ndim == 2:
             print(index, self.mask_dir.format(*index), mask.shape)
             mask = np.stack([mask] * 3, -1)
@@ -103,7 +109,12 @@ class HOI4D(Dataset):
         if not osp.exists(inp_file): json.dump(hoi_box.tolist(), open(inp_file, 'w'))
 
         inp_file = self.save_hoi.format(*save_index)
-        if not osp.exists(inp_file): imageio.imwrite(inp_file, hoi_image)
+        if not osp.exists(inp_file): 
+            try:
+                imageio.imwrite(inp_file, hoi_image)
+            except ValueError:
+                print(f'error {index}, shape: {hoi_image.shape}, likely one of hand or object missing: skipping')
+                return None
 
         inp_file = self.save_mask.format(*save_index)
         if not osp.exists(inp_file): imageio.imwrite(inp_file, mask)

@@ -42,6 +42,8 @@ import time
 import torch as th
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data.dataloader import default_collate
+
 
 from glide_text2im.download import load_checkpoint
 from glide_text2im.model_creation import (
@@ -150,7 +152,7 @@ def load_input(fname, mask_file=None, verbose=True):
 # Sample from the base model #
 ##############################
 def base_generate(model, diffusion, options, source_image_64, source_mask_64, prompt, ):
-    batch_size = args.bs
+    batch_size = source_image_64.shape[0]
     guidance_scale = args.scale # 5.0
     if args.verbose:    
         print('prompt: %s with scale %f' % (prompt, guidance_scale))
@@ -229,7 +231,7 @@ def base_generate(model, diffusion, options, source_image_64, source_mask_64, pr
 # Upsample the 64x64 samples #
 ##############################
 def upsample(model_up, diffusion_up, options_up, samples, source_image_256, source_mask_256, prompt, ):
-    batch_size = args.bs
+    batch_size = source_image_256.shape[0]
     upsample_temp = args.temp
     guidance_scale = args.scale
 
@@ -287,6 +289,12 @@ def upsample(model_up, diffusion_up, options_up, samples, source_image_256, sour
 
     return up_samples
 
+def collate_w_none(batch):
+    batch = [b for b in batch if b is not None]
+    if len(batch) == 0:
+        return None
+    return default_collate(batch)
+
 def dataloader(args):
     shuffle = True
     ds_list = []
@@ -302,7 +310,8 @@ def dataloader(args):
     np.random.seed(303)
 
     batch_size = args.bs if args.bs > 1 else None
-    dl = DataLoader(ds, batch_size, True, num_workers=args.num_workers, drop_last=False)
+    shuffle = True
+    dl = DataLoader(ds, batch_size, shuffle, num_workers=args.num_workers, drop_last=False, collate_fn=collate_w_none)
 
     return dl
 
@@ -630,11 +639,14 @@ if __name__ == '__main__':
     args = parser_args()
     print('save to', args.save_dir )
     if args.decode:
+        print('#'*20, f'\n### Decoding frames from {args.split} ###\n', '#'*20)
         decode_frame(args.split, open_close_art_only=args.open_close_art_only)
     if args.inpaint:
+        print('#'*20, f'\n### Inpainting frames from {args.split} ###\n', '#'*20) 
         if args.bs == 1:
             batch_main(args)
         else:
             batch_main_parallel(args)
     if args.bbox:
+        print('#'*20, f'\n### Making bbox from {args.split} ###\n', '#'*20)
         make_bbox(args.split)
