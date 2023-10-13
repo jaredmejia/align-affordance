@@ -38,6 +38,7 @@ import pickle
 from PIL import Image
 import cv2
 import numpy as np
+import time
 import torch as th
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, ConcatDataset
@@ -108,12 +109,13 @@ def load_up():
     return model_up, diffusion_up, options_up
 
 
-def predict_human(s=None,mask_file=None):
+def predict_human(s=None,mask_file=None, verbose=True):
     if not osp.exists(mask_file):
         # deprecated: hand detection
         pass
     else:
-        print('exist hand make', mask_file)
+        if verbose:
+            print('exist hand make', mask_file)
         ori_human_masks = cv2.imread(mask_file)
         masks = (ori_human_masks > 122.5)[..., 0]
 
@@ -133,13 +135,13 @@ def predict_human(s=None,mask_file=None):
     return masks, ori_human_masks
 
 
-def load_input(fname, mask_file=None):
+def load_input(fname, mask_file=None, verbose=True):
     # Source image we are inpainting
     pil_img = Image.open(fname).convert('RGB')
     source_image_256 = read_image(fname, size=256)
     source_image_64 = read_image(fname, size=64)
 
-    source_mask_256, orig_mask = predict_human(args.kernel, mask_file=mask_file)
+    source_mask_256, orig_mask = predict_human(args.kernel, mask_file=mask_file, verbose=verbose)
     source_mask_64 = F.interpolate(source_mask_256, (64, 64), mode='nearest')    
     return source_image_256, source_mask_256, source_image_64, source_mask_64, pil_img, orig_mask
 
@@ -150,7 +152,8 @@ def load_input(fname, mask_file=None):
 def base_generate(model, diffusion, options, source_image_64, source_mask_64, prompt, ):
     batch_size = args.bs
     guidance_scale = args.scale # 5.0
-    print('prompt: %s with scale %f' % (prompt, guidance_scale))
+    if args.verbose:    
+        print('prompt: %s with scale %f' % (prompt, guidance_scale))
 
     # Create an classifier-free guidance sampling function
     def model_fn(x_t, ts, **kwargs):
@@ -173,10 +176,15 @@ def base_generate(model, diffusion, options, source_image_64, source_mask_64, pr
 
     # Sampling parameters
     # Create the text tokens to feed to the model.
-    tokens = model.tokenizer.encode(prompt)
-    tokens, mask = model.tokenizer.padded_tokens_and_mask(
-        tokens, options['text_ctx']
-    )
+    if isinstance(prompt, list):
+        prompts = prompt
+    else:
+        prompts = [prompt]
+
+    tokens = [model.tokenizer.encode(prompt) for prompt in prompts]
+    tokens_and_masks = [model.tokenizer.padded_tokens_and_mask(t, options['text_ctx']) for t in tokens]
+    tokens = [t for t, _ in tokens_and_masks]
+    masks = [m for _, m in tokens_and_masks]
 
     # Create the classifier-free guidance tokens (empty)
     full_batch_size = batch_size * 2
@@ -187,19 +195,18 @@ def base_generate(model, diffusion, options, source_image_64, source_mask_64, pr
     # Pack the tokens together into model kwargs.
     model_kwargs = dict(
         tokens=th.tensor(
-            [tokens] * batch_size + [uncond_tokens] * batch_size, device=device
+            tokens + [uncond_tokens] * batch_size, device=device
         ),
         mask=th.tensor(
-            [mask] * batch_size + [uncond_mask] * batch_size,
+            masks + [uncond_mask] * batch_size,
             dtype=th.bool,
             device=device,
         ),
 
         # Masked inpainting image
-        inpaint_image=(source_image_64 * source_mask_64).repeat(full_batch_size, 1, 1, 1).to(device),
-        inpaint_mask=source_mask_64.repeat(full_batch_size, 1, 1, 1).to(device),
+        inpaint_image=(source_image_64 * source_mask_64).repeat(2, 1, 1, 1).to(device),
+        inpaint_mask=source_mask_64.repeat(2, 1, 1, 1).to(device),
     )
-
 
     # Sample from the base model.
     samples = diffusion.p_sample_loop(
@@ -226,10 +233,15 @@ def upsample(model_up, diffusion_up, options_up, samples, source_image_256, sour
     upsample_temp = args.temp
     guidance_scale = args.scale
 
-    tokens = model_up.tokenizer.encode(prompt)
-    tokens, mask = model_up.tokenizer.padded_tokens_and_mask(
-        tokens, options_up['text_ctx']
-    )
+    if isinstance(prompt, list):
+        prompts = prompt
+    else:
+        prompts = [prompt]
+
+    tokens = [model_up.tokenizer.encode(prompt) for prompt in prompts]
+    tokens_and_masks = [model_up.tokenizer.padded_tokens_and_mask(t, options_up['text_ctx']) for t in tokens]
+    tokens = [t for t, _ in tokens_and_masks]
+    masks = [m for _, m in tokens_and_masks]
 
     # Create the model conditioning dict.
     model_kwargs = dict(
@@ -238,17 +250,17 @@ def upsample(model_up, diffusion_up, options_up, samples, source_image_256, sour
 
         # Text tokens
         tokens=th.tensor(
-            [tokens] * batch_size, device=device
+            tokens, device=device
         ),
         mask=th.tensor(
-            [mask] * batch_size,
+            masks,
             dtype=th.bool,
             device=device,
         ),
 
         # Masked inpainting image.
-        inpaint_image=(source_image_256 * source_mask_256).repeat(batch_size, 1, 1, 1).to(device),
-        inpaint_mask=source_mask_256.repeat(batch_size, 1, 1, 1).to(device),
+        inpaint_image=(source_image_256 * source_mask_256).repeat(1, 1, 1, 1).to(device),
+        inpaint_mask=source_mask_256.repeat(1, 1, 1, 1).to(device),
     )
 
     def denoised_fn(x_start):
@@ -288,7 +300,10 @@ def dataloader(args):
 
     th.manual_seed(303)
     np.random.seed(303)
-    dl = DataLoader(ds, None, True, num_workers=8, drop_last=False)
+
+    batch_size = args.bs if args.bs > 1 else None
+    dl = DataLoader(ds, batch_size, True, num_workers=args.num_workers, drop_last=False)
+
     return dl
 
 
@@ -328,6 +343,50 @@ def batch_main(args):
         print('rm ', lock_file)
 
 
+def batch_main_parallel(args):
+    dl = dataloader(args)
+
+    glide = {}
+    glide['denoise'] = load_denoise_base()
+    glide['denoise_up'] = load_denoise_up()
+    glide['base'] = load_base()
+    glide['up'] = load_up()
+    
+    for i, data in tqdm(enumerate(dl), total=len(dl)):
+        if data is None:
+            continue
+        if args.num > 0 and i > args.num:
+            break
+        if args.base_ckpt is not None:
+            data['out_file'] = [osp.join(args.save_dir, osp.basename(data['out_file'][0]))]
+        if args.skip and osp.exists(data['out_file']):
+            print('skip', osp.exists(data['out_file']), data['out_file'])
+            continue
+        
+        # TODO: better way to handle lock files
+        lock_files = [out_file + '.lock' for out_file in data['out_file']]
+        for lock_file in lock_files:
+            try:
+                os.makedirs(lock_file)
+            except FileExistsError:
+                if args.skip:
+                    continue
+        
+        try:
+            if args.verbose:
+                print('inpainting')
+            inpaint_image_parallel(data['inp_file'], data['out_file'], glide, data)  # shall we do crop first?
+        except Exception as e:
+            if not KeyboardInterrupt and not args.debug:
+                continue
+            print(e)
+            raise e
+        
+        for lock_file in lock_files:
+            os.system('rm -r %s' % lock_file)
+            if args.verbose: 
+                print('rm ', lock_file)
+
 @th.no_grad()
 def inpaint_image(inp_file, out_file, glide, data):
     prompt = data['prompt']
@@ -363,7 +422,79 @@ def inpaint_image(inp_file, out_file, glide, data):
         print(denoise_file)
         out_image.save(denoise_file)
 
+@th.no_grad()
+def inpaint_image_parallel(inp_files, out_files, glide, data):
+    """For now, naively looping through loading of input and writing images.
+    But we definitely need to parallelize the diffusion process across images.
+    """
+    prompts = data['prompt']
+    mask_files = data['mask_file']
+
+    # TODO: parallelize loading inputs
+    source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks = load_input_parallel(inp_files, mask_files)
     
+    if not args.dry:
+        sample = base_generate(*glide['base'], source_images_64, source_masks_64, prompts)
+        samples_x256 = upsample(*glide['up'], sample, source_images_256, source_masks_256, prompts)
+
+        # TODO: parallize saving inpaint mask images
+        _save_inpaint_mask_parallel(samples_x256, ori_images, ori_masks, out_files, mask_files)
+
+        inp_images = F.avg_pool2d(samples_x256, 4)
+        out_images_64 = denoise_base(0.05, *glide['denoise'], inp_images, prompts)
+        out_images = denoised_up(0, *glide['denoise_up'], out_images_64, prompts)
+
+        # TODO: parallize saving denoised images
+        _save_denoised_parallel(out_images, ori_images, out_files)
+
+
+def load_input_parallel(inp_files, mask_files):
+    """TODO: parallelize loading inputs"""
+
+    source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks = [], [], [], [], [], []
+    for i, inp_file in enumerate(inp_files):
+        source_image_256, source_mask_256, source_image_64, source_mask_64, ori_image, ori_mask \
+            = load_input(inp_file, mask_file=mask_files[i], verbose=False)
+        
+        source_images_256.append(source_image_256)
+        source_masks_256.append(source_mask_256)
+        source_images_64.append(source_image_64)
+        source_masks_64.append(source_mask_64)
+        ori_images.append(ori_image)
+        ori_masks.append(ori_mask)
+
+    source_images_256 = th.cat(source_images_256, dim=0)
+    source_masks_256 = th.cat(source_masks_256, dim=0)
+    source_images_64 = th.cat(source_images_64, dim=0)
+    source_masks_64 = th.cat(source_masks_64, dim=0)
+
+    return source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks
+
+def _save_inpaint_mask_parallel(samples_x256, ori_images, ori_masks, out_files, mask_files):
+    """TODO: parallelize saving images"""
+    
+    for samplex256, ori_image, ori_mask, mask_file, out_file in zip(samples_x256, ori_images, ori_masks, mask_files, out_files):
+        out_image = Image.fromarray(image2np(samplex256.unsqueeze(0)))
+        out_image = out_image.resize(ori_image.size)
+
+        # save human mask as well~~
+        if not osp.exists(mask_file):
+            os.makedirs(osp.dirname(mask_file), exist_ok=True)
+            print(mask_file)
+            ori_mask.save(mask_file)
+
+        os.makedirs(osp.dirname(out_file), exist_ok=True)
+        out_image.save(out_file)    
+
+def _save_denoised_parallel(out_images, ori_images, out_files):
+    """TODO: parallelize saving images"""
+
+    for out_image, ori_image, out_file in zip(out_images, ori_images, out_files):
+        out_image = Image.fromarray(image2np(out_image.unsqueeze(0)))
+        out_image = out_image.resize(ori_image.size)
+        denoise_file = out_file.replace('glide_obj', 'denoised_obj')
+        os.makedirs(osp.dirname(denoise_file), exist_ok=True)
+        out_image.save(denoise_file)
 
 def decode_one_vid(vid, image_dir):
     vid_dir = osp.join(image_dir, '{}', 'align_rgb/image.mp4')
@@ -379,10 +510,20 @@ def decode_one_vid(vid, image_dir):
     os.system(cmd) 
 
 
-def decode_frame(csv_file, vid_index=None, rewrite=False):
+def decode_frame(csv_file, vid_index=None, rewrite=False, open_close_art_only=False):
     if vid_index is None:
         df = pandas.read_csv(csv_file)
         vid_index = list(set(df['vid_index']))
+        
+        if open_close_art_only:
+            print('Only including videos with open/close actions on safes and storage furniture')
+
+            art_classes = ["Safe", "StorageFurniture"]
+            art_actions = ["open", "close"]
+
+            art_df = df[df['class'].isin(art_classes) & df['action'].isin(art_actions)]
+            vid_index = list(set(art_df['vid_index']))
+
     save_dir = osp.join(args.data_dir,  'HOI4D_release', '{}', 'align_frames')
     for vid in tqdm(vid_index):
         if rewrite:
@@ -454,7 +595,6 @@ def make_bbox(df_file):
     return 
 
 
-
 def parser_args():
     parser = ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='data/hoi4d/')
@@ -464,6 +604,7 @@ def parser_args():
     
     parser.add_argument('--base_ckpt', type=str, default=None)
     parser.add_argument('--bs', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--scale', type=float, default=5)
     parser.add_argument('--kernel', type=int, default=7)
     parser.add_argument('--temp', type=float, default=0.997)
@@ -477,6 +618,9 @@ def parser_args():
     parser.add_argument('--inpaint', action='store_true')
     parser.add_argument('--bbox', action='store_true')
     parser.add_argument('--dir', type=str)
+    parser.add_argument('--verbose', action='store_true')
+
+    parser.add_argument('--open_close_art_only', action='store_true')
     args = parser.parse_args()
 
     return args
@@ -486,8 +630,11 @@ if __name__ == '__main__':
     args = parser_args()
     print('save to', args.save_dir )
     if args.decode:
-        decode_frame(args.split)
+        decode_frame(args.split, open_close_art_only=args.open_close_art_only)
     if args.inpaint:
-        batch_main(args)
+        if args.bs == 1:
+            batch_main(args)
+        else:
+            batch_main_parallel(args)
     if args.bbox:
         make_bbox(args.split)

@@ -1,7 +1,8 @@
 # path to store model, output
 # $output/
 #   release/
-output: output/ # /grogu/user/yufeiy2/dex_afford/
+# output: output/ # /grogu/user/yufeiy2/dex_afford/
+output: /scratch2/jared/projects/affordances/human-affordances/aff-diff/output/
 
 
 # path to store data
@@ -9,7 +10,8 @@ output: output/ # /grogu/user/yufeiy2/dex_afford/
 #   hoi4d/
 #     HOI4D_glide/
 #     Sets/
-data: /home/yufeiy2/scratch/result/
+# data: /home/yufeiy2/scratch/result/
+data: /scratch2/jared/projects/affordances/human-affordances/aff-diff/data/
 
 
 # path to store pretrained models

@@ -70,7 +70,8 @@ def load_denoise_base():
     model, diffusion = create_model_and_diffusion(**options)
     model.eval()
     model.to(device)
-    model.load_state_dict(load_checkpoint('base', device))
+    ckpt = load_checkpoint('base', device)
+    model.load_state_dict(ckpt)
     print('total base parameters', sum(x.numel() for x in model.parameters()))
     return model, diffusion, options
 
@@ -118,7 +119,7 @@ def image_editing(diffusion:SpacedDiffusion, noise_level, x0, model,model_kwargs
     x = x0 * diffusion.sqrt_alphas_cumprod[total_noise_levels - 1] + \
         e * diffusion.sqrt_one_minus_alphas_cumprod[total_noise_levels - 1]
     # image_utils.save_images(x, osp.join(args.save_dir, 'xT'), scale=True)
-    n = 1
+    n = x.shape[0]
 
     posterior_variance = diffusion.posterior_variance
     logvar = np.log(np.append(posterior_variance[1], posterior_variance[1:]))
@@ -141,13 +142,20 @@ def image_editing(diffusion:SpacedDiffusion, noise_level, x0, model,model_kwargs
 
 
 def upsample(ratio, model_up, diffusion_up, options_up, samples, prompt):
-    batch_size = 1
+    batch_size = samples.shape[0]
     upsample_temp = 0.9
 
-    tokens = model_up.tokenizer.encode(prompt)
-    tokens, mask = model_up.tokenizer.padded_tokens_and_mask(
-        tokens, options_up['text_ctx']
-    )
+    # Sampling parameters
+    # Create the text tokens to feed to the model.
+    if isinstance(prompt, list):
+        prompts = prompt
+    else:
+        prompts = [prompt]
+
+    tokens = [model_up.tokenizer.encode(prompt) for prompt in prompts]
+    tokens_and_masks = [model_up.tokenizer.padded_tokens_and_mask(t, options_up['text_ctx']) for t in tokens]
+    tokens = [t for t, _ in tokens_and_masks]
+    masks = [m for _, m in tokens_and_masks]
 
     # Create the model conditioning dict.
     model_kwargs = dict(
@@ -156,10 +164,10 @@ def upsample(ratio, model_up, diffusion_up, options_up, samples, prompt):
 
         # Text tokens
         tokens=th.tensor(
-            [tokens] * batch_size, device=device
+            tokens, device=device
         ),
         mask=th.tensor(
-            [mask] * batch_size,
+            masks,
             dtype=th.bool,
             device=device,
         ),
@@ -182,23 +190,26 @@ def upsample(ratio, model_up, diffusion_up, options_up, samples, prompt):
     return up_samples
     
     
-
 def denoise_base(ratio, model, diffusion, options, image64, prompt):
-    batch_size = 1
 
     # Sampling parameters
     # Create the text tokens to feed to the model.
-    tokens = model.tokenizer.encode(prompt)
-    tokens, mask = model.tokenizer.padded_tokens_and_mask(
-        tokens, options['text_ctx']
-    )
+    if isinstance(prompt, list):
+        prompts = prompt
+    else:
+        prompts = [prompt]
+
+    tokens = [model.tokenizer.encode(prompt) for prompt in prompts]
+    tokens_and_masks = [model.tokenizer.padded_tokens_and_mask(t, options['text_ctx']) for t in tokens]
+    tokens = [t for t, _ in tokens_and_masks]
+    masks = [m for _, m in tokens_and_masks]
 
     model_kwargs = dict(
         tokens=th.tensor(
-            [tokens] * batch_size, device=device
+            tokens, device=device
         ),
         mask=th.tensor(
-            [mask] * batch_size,
+            masks,
             dtype=th.bool,
             device=device,
         ),
