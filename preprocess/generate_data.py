@@ -440,7 +440,7 @@ def inpaint_image_parallel(inp_files, out_files, glide, data):
     mask_files = data['mask_file']
 
     # TODO: parallelize loading inputs
-    source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks = load_input_parallel(inp_files, mask_files)
+    source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks, mask_files, prompts = load_input_parallel(inp_files, mask_files, prompts)
     
     if not args.dry:
         sample = base_generate(*glide['base'], source_images_64, source_masks_64, prompts)
@@ -457,13 +457,17 @@ def inpaint_image_parallel(inp_files, out_files, glide, data):
         _save_denoised_parallel(out_images, ori_images, out_files)
 
 
-def load_input_parallel(inp_files, mask_files):
+def load_input_parallel(inp_files, mask_files, prompts):
     """TODO: parallelize loading inputs"""
 
-    source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks = [], [], [], [], [], []
-    for i, inp_file in enumerate(inp_files):
-        source_image_256, source_mask_256, source_image_64, source_mask_64, ori_image, ori_mask \
-            = load_input(inp_file, mask_file=mask_files[i], verbose=False)
+    source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks, mask_file_list, prompt_list = [], [], [], [], [], [], [], []
+    for i, (inp_file, mask_file, prompt) in enumerate(zip(inp_files, mask_files, prompts)):
+        try:
+            source_image_256, source_mask_256, source_image_64, source_mask_64, ori_image, ori_mask \
+                = load_input(inp_file, mask_file=mask_file, verbose=False)
+        except Exception as e:
+            print(e)
+            continue
         
         source_images_256.append(source_image_256)
         source_masks_256.append(source_mask_256)
@@ -471,13 +475,15 @@ def load_input_parallel(inp_files, mask_files):
         source_masks_64.append(source_mask_64)
         ori_images.append(ori_image)
         ori_masks.append(ori_mask)
+        mask_file_list.append(mask_file)
+        prompt_list.append(prompt)
 
     source_images_256 = th.cat(source_images_256, dim=0)
     source_masks_256 = th.cat(source_masks_256, dim=0)
     source_images_64 = th.cat(source_images_64, dim=0)
     source_masks_64 = th.cat(source_masks_64, dim=0)
 
-    return source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks
+    return source_images_256, source_masks_256, source_images_64, source_masks_64, ori_images, ori_masks, mask_file_list, prompt_list
 
 def _save_inpaint_mask_parallel(samples_x256, ori_images, ori_masks, out_files, mask_files):
     """TODO: parallelize saving images"""
