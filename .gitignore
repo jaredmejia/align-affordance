@@ -11,3 +11,4 @@ __pycache__/
 wandb/
 # third_party/
 **/glide_model_cache/
+configs/train.yaml
