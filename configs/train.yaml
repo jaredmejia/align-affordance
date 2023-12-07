@@ -55,7 +55,7 @@ cudnn_benchmark: True
 
 # loggingh params
 logging: wandb
-wandb_api:  change_to_your_api # TODO: change to yours! 
+wandb_api:  7232ab0c9254720d90558bd06ba205b043335b3c # TODO: change to yours! 
 log_frequency: 2500
 print_frequency: 100
 save_frequency: 5000

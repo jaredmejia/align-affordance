@@ -20,6 +20,7 @@ worker: inference # main function
 output: ${environment.output}
 what_ckpt: ${output}/release/content_glide/checkpoints/last.ckpt
 where_ckpt: ${output}/release/layout/checkpoints/last.ckpt
+align_ckpt: null
 
 # hijack params
 gt_xy: True

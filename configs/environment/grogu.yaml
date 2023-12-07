@@ -20,4 +20,4 @@ data: /scratch2/jared/projects/affordances/human-affordances/aff-diff/data/
 #     base_inpaint.pt
 #   stable/
 #     base_inpaint.pt
-pretrain: /home/yufeiy2/scratch/pretrain/
+pretrain: /scratch2/jared/projects/affordances/human-affordances/aff-diff/pretrain/

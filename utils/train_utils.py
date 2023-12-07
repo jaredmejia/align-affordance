@@ -65,8 +65,9 @@ def load_my_state_dict(model: nn.Module, state_dict, lambda_own=lambda x: x):
             continue
         own_state[own_name].copy_(param)
     
+    mod_state_dict_keys = [lambda_own(k) for k in state_dict.keys()]
     for name in own_state:
-        if name not in state_dict:
+        if name not in mod_state_dict_keys:
             logging.warn(f'Checkpoint misses key {name}')
 
 
@@ -84,6 +85,28 @@ def load_from_checkpoint(ckpt, cfg_file=None):
     print('loading from checkpoint', ckpt)    
     weights = torch.load(ckpt)['state_dict']
     load_my_state_dict(model, weights)
+    return model
+
+
+def load_finetuned_content_net(align_aff_ckpt, what_ckpt):
+    cfg_file = what_ckpt.split('checkpoints')[0] + '/config.yaml'
+    print('use cfg file', cfg_file)
+    cfg = OmegaConf.load(cfg_file)
+    cfg.model.resume_ckpt = None  # save time to load base model :p
+    module = importlib.import_module(cfg.model.module)
+    model_cls = getattr(module, cfg.model.model)
+    model = model_cls(cfg, )
+    model.init_model()
+
+    print('loading from checkpoint', align_aff_ckpt)
+    weights = torch.load(align_aff_ckpt, map_location=torch.device('cpu'))['state_dict']
+    
+    def replace_content_net(name):
+        if 'content_net' in name:
+            return name.split('content_net.')[1]
+
+    load_my_state_dict(model, weights, lambda x: replace_content_net(x))
+
     return model
 
 

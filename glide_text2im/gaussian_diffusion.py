@@ -26,6 +26,7 @@
 # added guided diffusion (`hijack`)
 # --------------------------------------------------------
 
+import contextlib
 import math
 
 import numpy as np
@@ -722,6 +723,8 @@ class GaussianDiffusion:
         denoised_fn=None,
         cond_fn=None,
         model_kwargs=None,
+        no_epsilon_grad=False,
+        no_xstart_grad=False,
     ):
         """
         Sample x_{t-1} from the model using fourth-order Pseudo Runge-Kutta
@@ -738,21 +741,28 @@ class GaussianDiffusion:
             if clip_denoised:
                 return x.clamp(-1, 1)
             return x
+        
+        epsilon_context_manager = th.no_grad if no_epsilon_grad else contextlib.nullcontext
+        xstart_context_manager = th.no_grad if no_xstart_grad else contextlib.nullcontext
 
-        t_mid = t.float() - 0.5
-        t_prev = t - 1
-        eps_1 = self.get_eps(model, x, t, model_kwargs, cond_fn)
-        x_1 = self.pndm_transfer(x, eps_1, t, t_mid)
-        eps_2 = self.get_eps(model, x_1, t_mid, model_kwargs, cond_fn)
-        x_2 = self.pndm_transfer(x, eps_2, t, t_mid)
-        eps_3 = self.get_eps(model, x_2, t_mid, model_kwargs, cond_fn)
-        x_3 = self.pndm_transfer(x, eps_3, t, t_prev)
-        eps_4 = self.get_eps(model, x_3, t_prev, model_kwargs, cond_fn)
-        eps_prime = (eps_1 + 2 * eps_2 + 2 * eps_3 + eps_4) / 6
+        with epsilon_context_manager():
+            t_mid = t.float() - 0.5
+            t_prev = t - 1
+            eps_1 = self.get_eps(model, x, t, model_kwargs, cond_fn)
+            x_1 = self.pndm_transfer(x, eps_1, t, t_mid)
+            eps_2 = self.get_eps(model, x_1, t_mid, model_kwargs, cond_fn)
+            x_2 = self.pndm_transfer(x, eps_2, t, t_mid)
+            eps_3 = self.get_eps(model, x_2, t_mid, model_kwargs, cond_fn)
+            x_3 = self.pndm_transfer(x, eps_3, t, t_prev)
+            eps_4 = self.get_eps(model, x_3, t_prev, model_kwargs, cond_fn)
+            eps_prime = (eps_1 + 2 * eps_2 + 2 * eps_3 + eps_4) / 6
 
         sample = self.pndm_transfer(x, eps_prime, t, t_prev)
-        pred_xstart = self.eps_to_pred_xstart(x, eps_prime, t)
-        pred_xstart = process_xstart(pred_xstart)
+
+        with xstart_context_manager():
+            pred_xstart = self.eps_to_pred_xstart(x, eps_prime, t)
+            pred_xstart = process_xstart(pred_xstart)
+        
         return {"sample": sample, "pred_xstart": pred_xstart, "eps": eps_prime}
 
     def prk_sample_loop_progressive(
@@ -845,6 +855,8 @@ class GaussianDiffusion:
         denoised_fn=None,
         cond_fn=None,
         model_kwargs=None,
+        no_epsilon_grad=False,
+        no_xstart_grad=False,
     ):
         """
         Sample x_{t-1} from the model using fourth-order Pseudo Linear Multistep
@@ -859,14 +871,20 @@ class GaussianDiffusion:
             if clip_denoised:
                 return x.clamp(-1, 1)
             return x
+        
+        epsilon_context_manager = th.no_grad if no_epsilon_grad else contextlib.nullcontext
+        xstart_context_manager = th.no_grad if no_xstart_grad else contextlib.nullcontext
 
-        eps = self.get_eps(model, x, t, model_kwargs, cond_fn)
-        eps_prime = (55 * eps - 59 * old_eps[-1] + 37 * old_eps[-2] - 9 * old_eps[-3]) / 24
+        with epsilon_context_manager():
+            eps = self.get_eps(model, x, t, model_kwargs, cond_fn)
+            eps_prime = (55 * eps - 59 * old_eps[-1] + 37 * old_eps[-2] - 9 * old_eps[-3]) / 24
 
         sample = self.pndm_transfer(x, eps_prime, t, t - 1)
 
-        pred_xstart = self.eps_to_pred_xstart(x, eps, t)
-        pred_xstart = process_xstart(pred_xstart)
+        with xstart_context_manager():
+            pred_xstart = self.eps_to_pred_xstart(x, eps, t)
+            pred_xstart = process_xstart(pred_xstart)
+
         return {"sample": sample, "pred_xstart": pred_xstart, "eps": eps}
 
     def plms_sample_loop_progressive(
@@ -950,6 +968,98 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+    def plms_sample_loop_progressive_grad(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        skip_obj=False,
+        hijack={},
+        num_steps_backprop=-1,
+    ):
+        """
+        Use PLMS to sample from the model and yield intermediate samples from
+        each timestep of PLMS.
+
+        Same usage as p_sample_loop_progressive().
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = th.randn(*shape, device=device)
+        indices = list(range(self.num_timesteps))[::-1][1:-1]
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+
+        old_eps = []
+
+        def backprop_cond(idx):
+            if num_steps_backprop == -1:
+                return True
+            num_steps = len(indices)
+            return num_steps - idx <= num_steps_backprop
+
+        for ii, i in enumerate(indices):
+            t = th.tensor([i] * shape[0], device=device)
+
+            grad_kwargs = {'no_epsilon_grad': False, 'no_xstart_grad': True} if backprop_cond(ii) else {'no_epsilon_grad': True, 'no_xstart_grad': True}
+
+            if len(old_eps) < 3:
+                out = self.prk_sample(
+                    model,
+                    img,
+                    t,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    **grad_kwargs,
+                )
+            else:
+                out = self.plms_sample(
+                    model,
+                    img,
+                    old_eps,
+                    t,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                    **grad_kwargs
+                )
+                old_eps.pop(0)
+            old_eps.append(out["eps"])
+            if len(hijack) > 0:
+                # hijack out['sample']
+                x0 = hijack['x0']  # (N, ...)
+                mask = hijack['mask'] # (N, ...)
+                if ii != len(indices) - 1:
+                    next_time = list(range(self.num_timesteps))[::-1][1:-1][ii+1]
+                    next_time = th.tensor([next_time] * shape[0], device=device)
+                    x0_t = self.q_sample(x0, next_time)
+                    x_hijack = th.where(mask > 0.5, x0_t, out['sample'])
+                    out['sample'] = x_hijack
+                else:
+                    x0_t = x0
+                    x_hijack = th.where(mask > 0.5, x0_t, out['sample'])
+                    out['sample'] = x_hijack
+
+            yield out
+            img = out["sample"]
+
     def plms_sample_loop(
         self,
         model,
@@ -964,15 +1074,19 @@ class GaussianDiffusion:
         intermed=False,
         skip_obj=False,
         hijack={},
+        keep_grad=False,
+        num_steps_backprop=10,
     ):
         """
         Generate samples from the model using PLMS.
 
         Same usage as p_sample_loop().
         """
+        sampling_fn = self.plms_sample_loop_progressive if not keep_grad else self.plms_sample_loop_progressive_grad
+        kwargs = {} if not keep_grad else {'num_steps_backprop': num_steps_backprop}
         final = None
-        sample_list = []
-        for sample in self.plms_sample_loop_progressive(
+        sample_list = [] if not keep_grad else None
+        for sample in sampling_fn(
             model,
             shape,
             noise=noise,
@@ -984,9 +1098,11 @@ class GaussianDiffusion:
             progress=progress,
             skip_obj = skip_obj,
             hijack=hijack,
+            **kwargs,
         ):
             final = sample
-            sample_list.append(sample['sample'])
+            if not keep_grad:
+                sample_list.append(sample['sample'])
         if not intermed:
             return final["sample"]
         return final['sample'], sample_list

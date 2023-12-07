@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import pytorch_lightning as pl
 from models.hand_proxy import build_stn
-from utils.train_utils import load_from_checkpoint
+from utils.train_utils import load_from_checkpoint, load_finetuned_content_net
 from jutils import image_utils
 from dataset.dataset import build_imglist_dataloader
 from utils import overlay_hand
@@ -51,6 +51,7 @@ class CascadeAffordance:
         os.makedirs(self.save_dir, exist_ok=True)
 
     def init_model(self, ):
+        align_ckpt = self.cfg.get('align_ckpt', None)
         where_ckpt = self.where_ckpt
         what_ckpt = self.what_ckpt
         where = self.where
@@ -65,7 +66,10 @@ class CascadeAffordance:
             self.where.to(device)
         if what_ckpt is not None:
             if what is None:
-                what = load_from_checkpoint(what_ckpt)
+                if align_ckpt is not None:
+                    what = load_finetuned_content_net(align_ckpt, what_ckpt)
+                else:
+                    what = load_from_checkpoint(what_ckpt)
             self.what = what
             self.what_cfg = what.cfg
             self.what.eval()
@@ -242,7 +246,7 @@ class CascadeAffordance:
             samples = inpaint_mask
         return samples, mask_param, inpaint_mask, 
 
-    def __call__(self, batch, use_gt=False, return_inter=False):
+    def __call__(self, batch, use_gt=False, return_inter=False, keep_grad=False, num_steps_backprop=10):
         device = self.device
         tokens, masks, reals, inpaint_image, inpaint_mask, mask_param, text = batch
         batch = tokens.to(device), masks.to(device), reals.to(device), \
@@ -263,7 +267,7 @@ class CascadeAffordance:
             H = self.what_cfg.side_x
             what_batch = tokens.to(device), masks.to(device), reals.to(device), \
                 F.adaptive_avg_pool2d(inpaint_image.to(device), H) , inpaint_mask.to(device), mask_param.to(device), text
-            samples, sample_list = self.what(what_batch)
+            samples, sample_list = self.what(what_batch, keep_grad=keep_grad, num_steps_backprop=num_steps_backprop)
         else:
             out = self.splat_to_mask.forward_image(mask_param, H=inpaint_image.shape[-1])
             samples = image_utils.blend_images(out['image'], inpaint_image, out['mask'], 1) 
@@ -303,10 +307,12 @@ class CascadeAffordance:
             overlay_hand.batch_main(osp.dirname(out_folder))
 
     def contact_metric(self, folder):
+        raise NotImplementedError("contact metric evaluation code not released in public version yet")
+
         import sys
         sys.path.insert(0, f'{hydra_utils.get_original_cwd()}/third_party/frankmocap/')
-        from handmocap.hand_bbox_detector import Ego_Centric_HOI_Detector        
-        self.hoi_detector = Ego_Centric_HOI_Detector()
+        from handmocap.hand_bbox_detector import Ego_Centric_Detector        
+        self.hoi_detector = Ego_Centric_Detector()
 
         img_list = sorted(glob(osp.join(folder, "*.png")))
         valid = []
